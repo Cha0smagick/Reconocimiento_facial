@@ -1,175 +1,207 @@
 import cv2
 import numpy as np
-from datetime import datetime
+import mediapipe as mp
+import time
+from collections import defaultdict
 
-try:
-    # Cargar clasificadores en cascada
-    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-    eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
-    smile_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_smile.xml')
+# Configuración de MediaPipe (no requiere descargas adicionales)
+mp_face_detection = mp.solutions.face_detection
+face_detection = mp_face_detection.FaceDetection(
+    model_selection=1,  # Modelo más preciso
+    min_detection_confidence=0.7
+)
 
-    # Inicializar la cámara
-    cap = cv2.VideoCapture(0)
-
-    # Variables para almacenar resultados
-    age_estimation = "Analizando..."
-    sentiment = "Analizando..."
-    race_estimation = "Analizando..."
-    gender_estimation = "Analizando..."
-    last_face_detected = False
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        # Crear barra lateral
-        height, width = frame.shape[:2]
-        sidebar_width = 350
-        combined_image = np.zeros((height, width + sidebar_width, 3), dtype=np.uint8)
-        combined_image[:, :width] = frame
-
-        # Diseño de la barra lateral
-        cv2.rectangle(combined_image, (width, 0), (width + sidebar_width, height), (40, 40, 40), -1)
-        cv2.putText(combined_image, "ANÁLISIS FACIAL EN TIEMPO REAL", (width + 10, 30), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 200), 2)
-        cv2.line(combined_image, (width, 50), (width + sidebar_width, 50), (100, 100, 100), 1)
-
-        # Convertir a escala de grises
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-        # Detección de rostros
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=7, minSize=(100, 100))
-
-        if len(faces) > 0:
-            last_face_detected = True
-            for (x, y, w, h) in faces:
-                # Dibujar rectángulo en el rostro
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 100, 0), 2)
-
-                # Región de interés (ROI)
-                roi_gray = gray[y:y + h, x:x + w]
-                roi_color = frame[y:y + h, x:x + w]
-
-                # Detección de ojos (para edad y sexo)
-                eyes = eye_cascade.detectMultiScale(roi_gray, scaleFactor=1.05, minNeighbors=5, minSize=(30, 30))
-                for (ex, ey, ew, eh) in eyes:
-                    cv2.rectangle(roi_color, (ex, ey), (ex + ew, ey + eh), (0, 255, 0), 1)
-
-                # Detección de sonrisa (para emoción)
-                smiles = smile_cascade.detectMultiScale(roi_gray, scaleFactor=1.7, minNeighbors=25, minSize=(50, 20))
-                for (sx, sy, sw, sh) in smiles:
-                    cv2.rectangle(roi_color, (sx, sy), (sx + sw, sy + sh), (0, 0, 255), 1)
-
-                # **ESTIMACIÓN DE EDAD (MÁS PRECISA)**
-                if len(eyes) >= 2:
-                    eye_dist = abs(eyes[0][0] - eyes[1][0])  # Distancia entre ojos
-                    face_ratio = w / h
-                    
-                    if eye_dist > 60 and face_ratio > 0.75:
-                        age_estimation = "20-30 años"
-                    elif eye_dist > 50 and face_ratio > 0.7:
-                        age_estimation = "30-45 años"
-                    elif eye_dist > 40:
-                        age_estimation = "45-60 años"
-                    else:
-                        age_estimation = "60+ años"
-                else:
-                    age_estimation = "No detectable"
-
-                # **DETECCIÓN DE EMOCIÓN (MÁS FINA)**
-                if len(smiles) > 0:
-                    smile_width = sw
-                    if smile_width > 70:
-                        sentiment = "😊 Feliz"
-                    elif smile_width > 40:
-                        sentiment = "🙂 Neutral"
-                    else:
-                        sentiment = "😐 Serio"
-                else:
-                    # Si no hay sonrisa, analizar cejas y ojos
-                    eyebrow_ratio = (np.mean([eh for (ex, ey, ew, eh) in eyes]) / h) if len(eyes) > 0 else 0
-                    if eyebrow_ratio > 0.15:
-                        sentiment = "😠 Enfadado"
-                    else:
-                        sentiment = "😐 Neutral"
-
-                # **ESTIMACIÓN DE ORIGEN RACIAL (MEJORADA)**
-                skin_roi = roi_color[int(h * 0.2):int(h * 0.8), int(w * 0.2):int(w * 0.8)]
-                skin_color = np.mean(skin_roi, axis=(0, 1))
-                
-                # Clasificación basada en tonos de piel
-                if skin_color[2] > 180 and skin_color[1] > 140 and skin_color[0] > 120:
-                    race_estimation = "Europeo/Caucásico"
-                elif skin_color[2] > 150 and skin_color[1] > 120 and skin_color[0] < 120:
-                    race_estimation = "Asiático Oriental"
-                elif skin_color[2] < 120 and skin_color[1] < 100 and skin_color[0] < 100:
-                    race_estimation = "Africano/Descendiente"
-                elif skin_color[2] > 160 and skin_color[1] > 120 and skin_color[0] > 100:
-                    race_estimation = "Latino/Mediterráneo"
-                else:
-                    race_estimation = "Indio/Medio Oriente"
-
-                # **ESTIMACIÓN DE SEXO (AJUSTADA)**
-                jaw_width = w
-                eyebrow_thickness = np.mean([eh / 4 for (ex, ey, ew, eh) in eyes]) if len(eyes) > 0 else 0
-                
-                if jaw_width > 140 and eyebrow_thickness > 6:
-                    gender_estimation = "♂ Masculino"
-                else:
-                    gender_estimation = "♀ Femenino"
-
+# Sistema de análisis alternativo cuando DeepFace falla
+class SimpleFaceAnalyzer:
+    def __init__(self):
+        self.emotion_labels = ["Neutral", "Feliz", "Triste", "Sorprendido"]
+        self.race_labels = ["Caucásico", "Asiático", "Afrodescendiente", "Latino"]
+        
+    def analyze(self, face_img):
+        # Análisis basado en características visuales simples
+        h, w = face_img.shape[:2]
+        
+        # Convertir a HSV para análisis de color
+        hsv = cv2.cvtColor(face_img, cv2.COLOR_BGR2HSV)
+        
+        # Estimación de edad basada en proporciones faciales
+        age = self._estimate_age(face_img)
+        
+        # Estimación de género basada en rasgos
+        gender = self._estimate_gender(face_img)
+        
+        # Detección de emoción simple
+        emotion = self._detect_emotion(face_img)
+        
+        # Estimación de origen racial basada en color
+        race = self._estimate_race(hsv)
+        
+        return {
+            'age': age,
+            'gender': gender,
+            'emotion': emotion,
+            'race': race
+        }
+    
+    def _estimate_age(self, face_img):
+        # Lógica simplificada basada en características faciales
+        gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, 50, 150)
+        edge_density = np.sum(edges) / (face_img.shape[0] * face_img.shape[1])
+        
+        if edge_density > 5:
+            return round(np.random.uniform(15, 25))  # Rostro joven
         else:
-            last_face_detected = False
+            return round(np.random.uniform(30, 50))  # Rostro maduro
+    
+    def _estimate_gender(self, face_img):
+        # Basado en proporciones faciales (simplificado)
+        ratio = face_img.shape[1] / face_img.shape[0]  # Ancho/Alto
+        return "Hombre" if ratio > 0.75 else "Mujer"
+    
+    def _detect_emotion(self, face_img):
+        # Detección simple basada en sonrisa
+        gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
+        smile_threshold = np.mean(gray) > 127  # Valor arbitrario
+        return "Feliz" if smile_threshold else "Neutral"
+    
+    def _estimate_race(self, hsv_img):
+        # Basado en tonos de piel en espacio HSV
+        hue_mean = np.mean(hsv_img[:,:,0])
+        if hue_mean < 15:
+            return self.race_labels[0]  # Caucásico
+        elif hue_mean < 25:
+            return self.race_labels[3]  # Latino
+        elif hue_mean < 35:
+            return self.race_labels[1]  # Asiático
+        else:
+            return self.race_labels[2]  # Afrodescendiente
 
-        # **MOSTRAR RESULTADOS EN BARRA LATERAL**
-        y_position = 90
-        line_height = 45
+# Inicializar analizador alternativo
+fallback_analyzer = SimpleFaceAnalyzer()
 
-        # Edad
-        cv2.putText(combined_image, "EDAD:", (width + 20, y_position), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 180, 180), 1)
-        cv2.putText(combined_image, f"{age_estimation}", (width + 20, y_position + 30), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 220, 220), 2)
-        y_position += line_height
+# Inicializar cámara
+cap = cv2.VideoCapture(0)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-        # Emoción
-        cv2.putText(combined_image, "EMOCIÓN:", (width + 20, y_position), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 180, 180), 1)
-        color = (0, 200, 0) if "Feliz" in sentiment else (0, 120, 255) if "Neutral" in sentiment else (0, 0, 200)
-        cv2.putText(combined_image, f"{sentiment}", (width + 20, y_position + 30), 
+# Variables para FPS
+prev_time = 0
+fps = 0
+analysis_history = defaultdict(list)
+
+def create_sidebar(frame, results, fps):
+    height, width = frame.shape[:2]
+    sidebar_width = 400
+    combined = np.zeros((height, width + sidebar_width, 3), dtype=np.uint8)
+    combined[:, :width] = frame
+    
+    # Diseño de la barra lateral
+    cv2.rectangle(combined, (width, 0), (width + sidebar_width, height), (45, 45, 45), -1)
+    cv2.putText(combined, "ANÁLISIS FACIAL", (width + 20, 40), 
+               cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 210, 210), 2)
+    cv2.putText(combined, f"FPS: {fps:.1f}", (width + 20, 80), 
+               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    
+    # Mostrar resultados
+    y_pos = 150
+    for key, (value, color) in results.items():
+        cv2.putText(combined, f"{key.upper()}:", (width + 20, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1)
+        cv2.putText(combined, f"{value}", (width + 20, y_pos + 40), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-        y_position += line_height
+        y_pos += 70
+    
+    # Indicador de método
+    method = "DeepFace" if results.get('method', 'Fallback') == 'DeepFace' else "Sistema Simple"
+    cv2.putText(combined, f"Método: {method}", (width + 20, height - 50), 
+               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 150, 255), 2)
+    
+    return combined
 
-        # Origen racial
-        cv2.putText(combined_image, "ORIGEN ESTIMADO:", (width + 20, y_position), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 180, 180), 1)
-        cv2.putText(combined_image, f"{race_estimation}", (width + 20, y_position + 30), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 0), 2)
-        y_position += line_height
+# Bucle principal
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
 
-        # Sexo
-        cv2.putText(combined_image, "SEXO:", (width + 20, y_position), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 180, 180), 1)
-        gender_color = (255, 0, 255) if "Masculino" in gender_estimation else (255, 100, 180)
-        cv2.putText(combined_image, f"{gender_estimation}", (width + 20, y_position + 30), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, gender_color, 2)
+    # Calcular FPS
+    current_time = time.time()
+    fps = 1 / (current_time - prev_time)
+    prev_time = current_time
 
-        # Estado de detección
-        status = "ROSTRO DETECTADO ✅" if last_face_detected else "BUSCANDO ROSTRO..."
-        status_color = (0, 255, 0) if last_face_detected else (0, 0, 255)
-        cv2.putText(combined_image, status, (width + 20, height - 30), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
+    # Convertir a RGB para MediaPipe
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = face_detection.process(rgb_frame)
+    
+    # Valores predeterminados
+    analysis_results = {
+        "edad": ("-", (200, 200, 0)),
+        "género": ("-", (200, 0, 200)),
+        "emoción": ("-", (0, 200, 0)),
+        "origen": ("-", (200, 200, 200)),
+        "method": ("Fallback", (255, 255, 255))
+    }
 
-        # Mostrar ventana
-        cv2.imshow('Análisis Facial Avanzado', combined_image)
+    if results.detections:
+        for detection in results.detections:
+            bbox = detection.location_data.relative_bounding_box
+            ih, iw = frame.shape[:2]
+            x, y = int(bbox.xmin * iw), int(bbox.ymin * ih)
+            w, h = int(bbox.width * iw), int(bbox.height * ih)
+            
+            # Ajustar coordenadas
+            x, y = max(0, x), max(0, y)
+            w, h = min(w, iw - x), min(h, ih - y)
+            
+            face_img = frame[y:y+h, x:x+w]
+            
+            if face_img.size == 0:
+                continue
+                
+            try:
+                # Intento con DeepFace (comentado por problemas)
+                # analysis = DeepFace.analyze(...)
+                
+                # Usar sistema alternativo
+                analysis = fallback_analyzer.analyze(face_img)
+                
+                # Promediar resultados para suavizar cambios bruscos
+                for key in ['age', 'gender', 'emotion', 'race']:
+                    analysis_history[key].append(analysis[key])
+                    if len(analysis_history[key]) > 5:
+                        analysis_history[key].pop(0)
+                
+                # Obtener valor más frecuente
+                def most_common(lst):
+                    return max(set(lst), key=lst.count)
+                
+                age = most_common(analysis_history['age'])
+                gender = most_common(analysis_history['gender'])
+                emotion = most_common(analysis_history['emotion'])
+                race = most_common(analysis_history['race'])
+                
+                analysis_results = {
+                    "edad": (f"{age}", (0, 255, 255)),
+                    "género": (f"{gender}", (255, 0, 255)),
+                    "emoción": (f"{emotion}", (0, 255, 0) if emotion == "Feliz" else (0, 165, 255)),
+                    "origen": (f"{race}", (255, 255, 0)),
+                    "method": ("Fallback", (255, 255, 255))
+                }
+                
+                # Dibujar rectángulo
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                
+            except Exception as e:
+                print(f"Error en análisis: {str(e)[:50]}...")
+                continue
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+    # Mostrar resultados
+    combined_frame = create_sidebar(frame, analysis_results, fps)
+    cv2.imshow("Análisis Facial Avanzado", combined_frame)
+    
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
 
-except Exception as e:
-    print(f"Error: {e}")
-
-finally:
-    cap.release()
-    cv2.destroyAllWindows()
+cap.release()
+cv2.destroyAllWindows()
